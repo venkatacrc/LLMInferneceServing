@@ -1561,3 +1561,381 @@ The `InputPreprocessor` serves as the **universal adapter** between:
 
 This design makes vLLM capable of handling diverse input formats while maintaining **type safety, performance, and extensibility** across different model architectures and use cases.
 
+# Scheduler: High-Level Design and Architecture
+
+The `scheduler.py` file implements vLLM's **core request scheduling and memory management system** that enables efficient continuous batching and resource allocation. The design follows a **sophisticated resource-aware scheduling pattern** that optimizes for throughput while maintaining fairness.
+
+## Core Design Philosophy
+
+The scheduler operates on the principle of **"maximize throughput while respecting resource constraints"** through:
+- **Continuous batching**: Mix new requests with ongoing generation
+- **Intelligent preemption**: Swap out requests when memory is full
+- **Priority-aware scheduling**: Support different scheduling policies  
+- **Memory-efficient operations**: Minimize GPU memory fragmentation
+
+## Key Components and Design Patterns
+
+### 1. **Three-Queue Architecture**
+
+```python
+class Scheduler:
+    def __init__(self, scheduler_config: SchedulerConfig, cache_config: CacheConfig, ...):
+        # Sequence groups in different states
+        self.waiting: Deque[SequenceGroup] = deque()    # New/preempted requests
+        self.running: Deque[SequenceGroup] = deque()    # Currently executing
+        self.swapped: Deque[SequenceGroup] = deque()    # Swapped to CPU memory
+        
+        # Block space manager for memory allocation
+        self.block_manager = BlockSpaceManagerImpl(
+            block_size=self.cache_config.block_size,
+            num_gpu_blocks=num_gpu_blocks,
+            num_cpu_blocks=num_cpu_blocks,
+            enable_caching=self.cache_config.enable_prefix_caching,
+        )
+```
+
+**Design Pattern**: **State Machine Pattern**
+- **Requests flow** between waiting → running → finished/swapped
+- **State transitions** are managed based on resource availability
+- **Queue-based organization** enables efficient FIFO/priority scheduling
+
+### 2. **Resource Budget Management**
+
+```python
+@dataclass
+class SchedulingBudget:
+    """Resource constraints for each scheduling iteration"""
+    
+    token_budget: int                    # Max tokens per batch
+    max_num_seqs: int                   # Max sequences per batch
+    _num_batched_tokens: int = 0        # Current token usage
+    _num_curr_seqs: int = 0             # Current sequence count
+    
+    def can_schedule(self, *, num_new_tokens: int, num_new_seqs: int):
+        """Check if new request fits within budget"""
+        return (self.num_batched_tokens + num_new_tokens <= self.token_budget
+                and self.num_curr_seqs + num_new_seqs <= self.max_num_seqs)
+    
+    def add_num_batched_tokens(self, req_id: str, num_batched_tokens: int, 
+                              num_cached_tokens: int = 0):
+        """Account for newly scheduled tokens"""
+        if req_id in self._request_ids_num_batched_tokens:
+            return  # Avoid double-counting
+        self._num_batched_tokens += num_batched_tokens
+        self._num_cached_tokens += num_cached_tokens
+```
+
+**Design Concept**: **Resource Accounting Pattern**
+- **Fine-grained tracking** of token and sequence budgets
+- **Deduplication** prevents double-counting same request
+- **Cache-aware accounting** distinguishes cached vs new tokens
+
+### 3. **Main Scheduling Algorithm**
+
+```python
+def schedule(self) -> Tuple[List[SequenceGroupMetadata], SchedulerOutputs, bool]:
+    """Main scheduling entry point"""
+    scheduler_start_time = time.perf_counter()
+    
+    # Core scheduling logic
+    scheduler_outputs: SchedulerOutputs = self._schedule()
+    
+    # Create metadata for model execution
+    seq_group_metadata_list: List[SequenceGroupMetadata] = []
+    for scheduled_seq_group in scheduler_outputs.scheduled_seq_groups:
+        seq_group = scheduled_seq_group.seq_group
+        token_chunk_size = scheduled_seq_group.token_chunk_size
+        
+        # Build sequence data and block tables
+        seq_data: Dict[int, SequenceData] = {}
+        block_tables: Dict[int, List[int]] = {}
+        
+        for seq in seq_group.get_seqs(status=SequenceStatus.RUNNING):
+            seq_data[seq.seq_id] = seq.data
+            block_tables[seq.seq_id] = self.block_manager.get_block_table(seq)
+            
+        # Create metadata for workers
+        seq_group_metadata = SequenceGroupMetadata(
+            request_id=seq_group.request_id,
+            is_prompt=seq_group.is_prefill(),
+            seq_data=seq_data,
+            sampling_params=seq_group.sampling_params,
+            block_tables=block_tables,
+            token_chunk_size=token_chunk_size,
+            lora_request=seq_group.lora_request,
+            multi_modal_data=seq_group.multi_modal_data,
+        )
+        seq_group_metadata_list.append(seq_group_metadata)
+    
+    return seq_group_metadata_list, scheduler_outputs, allow_async_output_proc
+```
+
+**Design Pattern**: **Template Method Pattern**
+- **Main algorithm structure** is fixed
+- **Specific scheduling policies** implemented in `_schedule()` variants
+- **Metadata preparation** is consistent across policies
+
+### 4. **Default Scheduling Policy**
+
+```python
+def _schedule_default(self) -> SchedulerOutputs:
+    """Throughput-optimized scheduling policy"""
+    
+    # Initialize resource budget
+    budget = SchedulingBudget(
+        token_budget=self.scheduler_config.max_num_batched_tokens,
+        max_num_seqs=self.scheduler_config.max_num_seqs,
+    )
+    
+    # Account for currently running requests
+    for seq_group in self.running:
+        budget.add_num_seqs(seq_group.request_id,
+                           seq_group.get_max_num_running_seqs())
+    
+    # Phase 1: Schedule prefill requests (new prompts)
+    prefills = SchedulerPrefillOutputs.create_empty()
+    if not self.swapped:  # Prioritize swapped requests
+        prefills = self._schedule_prefills(budget, curr_loras, enable_chunking=False)
+    
+    # Phase 2: Schedule running requests (decode steps)
+    running_scheduled = SchedulerRunningOutputs.create_empty()
+    if len(prefills.seq_groups) == 0:  # Don't mix prefill and decode
+        running_scheduled = self._schedule_running(budget, curr_loras, enable_chunking=False)
+    
+    # Phase 3: Swap in requests from CPU memory
+    swapped_in = SchedulerSwappedInOutputs.create_empty()
+    if len(running_scheduled.preempted) + len(running_scheduled.swapped_out) == 0:
+        swapped_in = self._schedule_swapped(budget, curr_loras)
+    
+    # Update queue states
+    self.waiting.extendleft(running_scheduled.preempted)
+    self.running.extend([s.seq_group for s in prefills.seq_groups])
+    self.running.extend(running_scheduled.decode_seq_groups_list)
+    self.swapped.extend(running_scheduled.swapped_out)
+```
+
+**Design Concept**: **Phase-Based Scheduling**
+- **Prefill priority**: New requests get priority for better latency
+- **No mixing**: Prefill and decode are separate phases for efficiency
+- **Preemption handling**: Memory pressure triggers swapping/recomputation
+
+### 5. **Prefill Scheduling with Chunking**
+
+```python
+def _schedule_prefills(self, budget: SchedulingBudget, curr_loras: Optional[Set[int]],
+                      enable_chunking: bool = False) -> SchedulerPrefillOutputs:
+    """Schedule waiting requests for prefill processing"""
+    
+    seq_groups: List[ScheduledSequenceGroup] = []
+    ignored_seq_groups: List[SequenceGroup] = []
+    
+    while self._passed_delay(time.time()) and self.waiting:
+        seq_group = self.waiting[0]
+        waiting_seqs = seq_group.get_seqs(status=SequenceStatus.WAITING)
+        
+        # Calculate token requirements
+        num_new_tokens_uncached, num_new_tokens_cached = (
+            self._get_num_new_uncached_and_cached_tokens(
+                seq_group, SequenceStatus.WAITING, enable_chunking, budget))
+        num_new_tokens = num_new_tokens_uncached + num_new_tokens_cached
+        
+        # Check prompt length limits
+        prompt_limit = self._get_prompt_limit(seq_group)
+        if num_new_tokens > prompt_limit:
+            # Mark as ignored and continue
+            for seq in waiting_seqs:
+                seq.status = SequenceStatus.FINISHED_IGNORED
+            ignored_seq_groups.append(seq_group)
+            self.waiting.popleft()
+            continue
+        
+        # Check memory allocation
+        can_allocate = self.block_manager.can_allocate(seq_group)
+        if can_allocate == AllocStatus.LATER:
+            break  # No more memory available
+        elif can_allocate == AllocStatus.NEVER:
+            # Will never fit - ignore request
+            ignored_seq_groups.append(seq_group)
+            self.waiting.popleft()
+            continue
+        
+        # Check budget constraints
+        num_new_seqs = seq_group.get_max_num_running_seqs()
+        if not budget.can_schedule(num_new_tokens=num_new_tokens,
+                                 num_new_seqs=num_new_seqs):
+            break  # Budget exhausted
+        
+        # Schedule the request
+        self._allocate_and_set_running(seq_group)
+        seq_groups.append(ScheduledSequenceGroup(
+            seq_group=seq_group, token_chunk_size=num_new_tokens))
+        budget.add_num_batched_tokens(seq_group.request_id, num_new_tokens_uncached,
+                                    num_new_tokens_cached)
+        budget.add_num_seqs(seq_group.request_id, num_new_seqs)
+        self.waiting.popleft()
+```
+
+**Design Features**:
+- **Chunked prefill**: Large prompts can be processed in chunks
+- **Memory-aware**: Checks allocation before committing
+- **Budget-aware**: Respects token and sequence limits
+- **Graceful degradation**: Ignores requests that won't fit
+
+### 6. **Intelligent Preemption System**
+
+```python
+def _preempt(self, seq_group: SequenceGroup, 
+            blocks_to_swap_out: List[Tuple[int, int]]) -> PreemptionMode:
+    """Choose and execute preemption strategy"""
+    
+    # Determine preemption mode
+    if self.user_specified_preemption_mode is not None:
+        preemption_mode = self.user_specified_preemption_mode
+    else:
+        # Auto-select based on sequence characteristics
+        if seq_group.get_max_num_running_seqs() == 1:
+            # Single sequence: recomputation is cheaper
+            preemption_mode = PreemptionMode.RECOMPUTE
+        else:
+            # Multiple sequences (beam search): swapping preserves work
+            preemption_mode = PreemptionMode.SWAP
+    
+    if preemption_mode == PreemptionMode.RECOMPUTE:
+        self._preempt_by_recompute(seq_group)
+    elif preemption_mode == PreemptionMode.SWAP:
+        self._preempt_by_swap(seq_group, blocks_to_swap_out)
+    
+    return preemption_mode
+
+def _preempt_by_recompute(self, seq_group: SequenceGroup) -> None:
+    """Discard KV cache and restart from beginning"""
+    seqs = seq_group.get_seqs(status=SequenceStatus.RUNNING)
+    for seq in seqs:
+        seq.status = SequenceStatus.WAITING
+        self.free_seq(seq)  # Free GPU memory blocks
+        seq.reset_state_for_recompute()  # Reset sequence state
+
+def _preempt_by_swap(self, seq_group: SequenceGroup, 
+                    blocks_to_swap_out: List[Tuple[int, int]]) -> None:
+    """Move KV cache to CPU memory"""
+    self._swap_out(seq_group, blocks_to_swap_out)
+```
+
+**Design Pattern**: **Strategy Pattern**
+- **Multiple preemption strategies** based on sequence characteristics
+- **Automatic selection**: Single sequences use recomputation, multiple use swapping
+- **Resource optimization**: Minimizes wasted computation
+
+### 7. **Chunked Prefill Support**
+
+```python
+def _schedule_chunked_prefill(self) -> SchedulerOutputs:
+    """Advanced scheduling with chunked prefill support"""
+    
+    budget = SchedulingBudget(
+        token_budget=self.scheduler_config.max_num_batched_tokens,
+        max_num_seqs=self.scheduler_config.max_num_seqs,
+    )
+    
+    # First, schedule already running requests (ongoing chunks)
+    running_scheduled = self._schedule_running(budget, curr_loras, enable_chunking=True)
+    
+    # Then, try to fill remaining budget with new prefills
+    prefills = SchedulerPrefillOutputs.create_empty()
+    if budget.remaining_token_budget() > 0:
+        prefills = self._schedule_prefills(budget, curr_loras, enable_chunking=True)
+    
+    # Combine prefill and decode into single batch
+    scheduled_seq_groups = []
+    scheduled_seq_groups.extend(running_scheduled.prefill_seq_groups)  # Chunked prefills
+    scheduled_seq_groups.extend(prefills.seq_groups)                  # New prefills
+    scheduled_seq_groups.extend(running_scheduled.decode_seq_groups)  # Decodes
+```
+
+**Design Concept**: **Mixed Workload Optimization**
+- **Prefill chunking**: Large prompts processed incrementally
+- **Workload mixing**: Prefill chunks and decode steps in same batch
+- **Budget optimization**: Fill available compute with best mix of work
+
+### 8. **Priority Scheduling**
+
+```python
+def _schedule_priority_preemption(self, budget: SchedulingBudget) -> int:
+    """Preempt low-priority requests for high-priority ones"""
+    
+    waiting_queue = deque(self.waiting)
+    running_queue = deque(self.running)
+    
+    force_preemption_count = 0
+    while waiting_queue:
+        seq_group = waiting_queue.popleft()
+        
+        # Try to fit within budget
+        num_new_tokens = self._get_num_new_tokens(seq_group)
+        if budget.can_schedule(num_new_tokens=num_new_tokens, num_new_seqs=1):
+            break  # Found space naturally
+        
+        # Need to preempt - find victim with lower priority
+        while running_queue and force_preemption_count < self.max_num_running_seqs:
+            if running_queue[-1].priority >= seq_group.priority:
+                break  # No suitable victim
+            
+            # Preempt the victim
+            victim = running_queue.pop()
+            self._preempt(victim, blocks_to_swap_out)
+            waiting_queue.appendleft(victim)
+            force_preemption_count += 1
+        
+        # Re-sort waiting queue by priority
+        waiting_queue = deque(sorted(waiting_queue, key=self._get_priority))
+    
+    return force_preemption_count
+```
+
+## Advanced Design Features
+
+### **Prefix Caching Integration**
+
+```python
+# Cache-aware token counting
+if self.cache_config.enable_prefix_caching:
+    common_computed_block_nums = (
+        self.block_manager.get_common_computed_block_ids(
+            seq_group.get_seqs(status=SequenceStatus.RUNNING)))
+```
+
+### **LoRA Batching Optimization**
+
+```python
+# Efficient LoRA batching
+curr_loras = set(seq_group.lora_int_id for seq_group in self.running 
+                if seq_group.lora_int_id > 0)
+
+# Sort scheduled groups by LoRA ID for efficient execution
+def _sort_by_lora_ids(self):
+    def key_fn(group: ScheduledSequenceGroup):
+        return (group.seq_group.lora_int_id, group.seq_group.request_id)
+    self.scheduled_seq_groups = sorted(self.scheduled_seq_groups, key=key_fn)
+```
+
+### **Memory-Efficient Object Pooling**
+
+```python
+# Reuse expensive objects across iterations
+self._seq_group_metadata_cache: List[PyObjectCache] = []
+self._scheduler_running_outputs_cache: List[PyObjectCache] = []
+
+# Get cached object instead of allocating new
+seq_group_metadata = self._seq_group_metadata_cache[self.cache_id].get_object()
+```
+
+## Key Design Benefits
+
+1. **High Throughput**: Continuous batching maximizes GPU utilization
+2. **Low Latency**: Prefill priority and chunking reduce time-to-first-token
+3. **Memory Efficiency**: Intelligent preemption and prefix caching
+4. **Fairness**: Priority scheduling and anti-starvation mechanisms
+5. **Scalability**: Resource-aware scheduling adapts to available memory
+6. **Flexibility**: Multiple scheduling policies for different workloads
+
+The scheduler serves as vLLM's **traffic controller**, intelligently managing the flow of requests through the system while maximizing resource utilization and maintaining quality of service guarantees. Its sophisticated design enables vLLM to achieve industry-leading throughput and latency characteristics.
