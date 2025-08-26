@@ -669,3 +669,276 @@ async def run_server_worker(...):
 - **Resource cleanup**
 
 This API server transforms vLLM from a Python library into a **production-ready web service** that's compatible with existing OpenAI client libraries and tools, making it easy to drop vLLM into existing AI applications.
+
+
+# `llm_engine.py`
+
+The `LLMEngine` class is the core orchestrator of vLLM's inference system. Here are all the important functions categorized by their purpose:
+
+## 1. **Engine Lifecycle & Initialization**
+
+### **`__init__()`** 
+```python
+def __init__(self, vllm_config: VllmConfig, executor_class: Type[ExecutorBase], ...)
+```
+**Purpose**: Initializes the LLM engine with all necessary components
+- **Sets up configurations** (model, parallel, scheduler, cache)
+- **Initializes tokenizer** and input preprocessor
+- **Creates schedulers** (one per virtual engine for pipeline parallelism)
+- **Initializes model executor** for distributed execution
+- **Sets up caches** (KV cache, multimodal cache)
+
+### **Factory Methods**
+#### **`from_vllm_config()`**  / **`from_engine_args()`** 
+```python
+@classmethod
+def from_vllm_config(cls, vllm_config: VllmConfig, ...)
+```
+**Purpose**: Create engine instances from configuration objects
+- **Auto-selects V0 vs V1** engine architecture
+- **Handles usage context** and logging setup
+- **Primary way to instantiate engines**
+
+### **`_get_executor_cls()`**
+```python
+@classmethod 
+def _get_executor_cls(cls, engine_config: VllmConfig) -> Type[ExecutorBase]
+```
+**Purpose**: Determines the appropriate executor class for the configuration
+- **Chooses between UniProc, Ray, MP executors** based on parallelism settings
+- **Critical for distributed execution setup**
+
+## 2. **Request Management**
+
+### **`add_request()`**  - **CORE FUNCTION**
+```python
+def add_request(self, request_id: str, prompt: PromptType, 
+                params: Union[SamplingParams, PoolingParams], ...)
+```
+**Purpose**: Main entry point for adding requests to the engine
+- **Validates request parameters** (request_id, LoRA, priority)
+- **Preprocesses inputs** (tokenization, multimodal data)
+- **Creates sequence groups** from prompts
+- **Adds to scheduler** for processing
+- **Load balances** across virtual engines
+
+### **`_add_processed_request()`** 
+```python
+def _add_processed_request(self, request_id: str, processed_inputs: ProcessorInputs, ...)
+```
+**Purpose**: Internal method that processes validated requests
+- **Creates sequences** from processed inputs
+- **Handles sampling vs pooling** parameters
+- **Creates sequence groups** and adds to scheduler
+
+### **`_create_sequence_group_with_sampling()`** 
+```python
+def _create_sequence_group_with_sampling(self, request_id: str, seq: Sequence, ...)
+```
+**Purpose**: Creates sequence groups for text generation tasks
+- **Handles beam search** (creates multiple sequences)
+- **Sets up sampling parameters**
+- **Configures LoRA requests**
+
+### **`_create_sequence_group_with_pooling()`** 
+```python  
+def _create_sequence_group_with_pooling(self, request_id: str, seq: Sequence, ...)
+```
+**Purpose**: Creates sequence groups for embedding/classification tasks
+- **Single sequence per group** (no beam search)
+- **Configures pooling parameters**
+
+### **`abort_request()`** 
+```python
+def abort_request(self, request_id: Union[str, Iterable[str]]) -> None
+```
+**Purpose**: Cancels requests that are waiting or running
+- **Handles both single and batch abort**
+- **Frees resources** (KV cache blocks)
+- **Updates scheduler state**
+
+## 3. **Core Execution - The Heart of vLLM**
+
+### **`step()`** - **MOST IMPORTANT FUNCTION**
+```python
+def step(self) -> List[Union[RequestOutput, PoolingRequestOutput]]
+```
+**Purpose**: The main execution loop - performs one iteration of inference
+
+**Three-Phase Process**:
+
+#### **Phase 1: Scheduling**
+- **Calls scheduler** to decide which requests to process
+- **Determines memory allocation** (KV cache blocks)
+- **Handles preemption** if memory is full
+- **Supports chunked prefill** for long prompts
+
+#### **Phase 2: Model Execution**
+```python
+outputs = self.model_executor.execute_model(execute_model_req)
+```
+- **Creates ExecuteModelRequest** with all necessary data
+- **Calls distributed executor** to run model forward pass
+- **Handles failures** and error recovery
+
+#### **Phase 3: Post-Processing**
+- **Processes model outputs** through `_process_model_outputs()`
+- **Updates sequences** with new tokens
+- **Checks stopping criteria**
+- **Creates RequestOutput objects**
+
+### **`_process_model_outputs()`** 
+```python
+def _process_model_outputs(self, ctx: SchedulerContext, request_id: Optional[str] = None)
+```
+**Purpose**: Processes raw model outputs into final results
+- **Handles sampling** (temperature, top-p, top-k)
+- **Applies stopping criteria** (stop tokens, max length)
+- **Updates sequence states**
+- **Creates output objects**
+
+### **`_advance_to_next_step()`** 
+```python
+def _advance_to_next_step(self, output: SamplerOutput, seq_group_metadata_list, ...)
+```
+**Purpose**: Updates sequences with generated tokens
+- **Appends new tokens** to sequences
+- **Updates logprobs** and embeddings
+- **Advances sequence state**
+
+## 4. **State Management & Queries**
+
+### **Request State Queries**
+```python
+def get_num_unfinished_requests(self) -> int  
+def has_unfinished_requests(self) -> bool     
+def has_unfinished_requests_for_virtual_engine(self, virtual_engine: int) -> bool 
+```
+**Purpose**: Query engine state for request management
+- **Used by async engine** to know when to wait
+- **Critical for pipeline parallelism**
+
+### **Configuration Getters**
+```python
+def get_vllm_config(self) -> VllmConfig        
+def get_model_config(self) -> ModelConfig      
+def get_parallel_config(self) -> ParallelConfig 
+def get_scheduler_config(self) -> SchedulerConfig 
+```
+**Purpose**: Provide access to engine configurations
+- **Used by API servers** and monitoring
+- **Supports introspection**
+
+## 5. **Cache Management**
+
+### **`reset_mm_cache()`** (Line 841)
+```python
+def reset_mm_cache(self) -> bool
+```
+**Purpose**: Clears multimodal processor cache
+- **Frees memory** from image/audio processing
+- **Used between requests** with different modalities
+
+### **`reset_prefix_cache()`** (Line 846)
+```python  
+def reset_prefix_cache(self, device: Optional[Device] = None) -> bool
+```
+**Purpose**: Clears prefix caching state
+- **Resets cached prompt prefixes**
+- **Important for memory management**
+
+## 6. **Performance & Observability**
+
+### **`do_log_stats()`** 
+```python
+def do_log_stats(self, scheduler_outputs: Optional[SchedulerOutputs] = None, ...)
+```
+**Purpose**: Comprehensive performance logging and metrics collection
+- **System metrics**: GPU/CPU cache usage, queue sizes
+- **Request metrics**: Latency, throughput, token counts
+- **LoRA metrics**: Active adapter usage
+- **Speculative decoding metrics**
+
+Key metrics tracked:
+- **Time to First Token (TTFT)**
+- **Time Per Output Token (TPOT)**
+- **End-to-end latency**
+- **Cache hit rates**
+- **Queue wait times**
+
+### **`start_profile()` / `stop_profile()`** 
+```python
+def start_profile(self) -> None
+def stop_profile(self) -> None
+```
+**Purpose**: Performance profiling support
+- **Enables CUDA profiling**
+- **Used for performance debugging**
+
+### **Tracing Functions**
+#### **`do_tracing()`** (Line 1688) / **`create_trace_span()`**
+**Purpose**: OpenTelemetry tracing support
+- **Creates trace spans** for requests
+- **Tracks request lifecycle**
+- **Supports distributed tracing**
+
+## 7. **Utility & Validation**
+
+### **`_validate_model_inputs()`** 
+```python
+def _validate_model_inputs(self, inputs: ProcessorInputs, lora_request: Optional[LoRARequest])
+```
+**Purpose**: Validates input prompts and tokens
+- **Checks token limits**
+- **Validates multimodal inputs**
+- **Ensures LoRA compatibility**
+
+### **`_has_remaining_steps()`** 
+```python
+def _has_remaining_steps(self, seq_group_metadata_list: Optional[List[SequenceGroupMetadata]]) -> bool
+```
+**Purpose**: Checks if multi-step decoding has remaining steps
+- **Used in chunked prefill**
+- **Supports speculative decoding**
+
+### **Static Validation Methods**
+#### **`validate_output()` / `validate_outputs()`**
+```python
+@staticmethod
+def validate_output(output, output_type: Type[_O]) -> _O
+def validate_outputs(outputs: List[Any], output_type: Type[_O]) -> List[_O]
+```
+**Purpose**: Type validation for outputs
+- **Ensures type safety**
+- **Used in testing**
+
+## **Critical Function Interactions**
+
+### **Main Execution Flow**:
+1. **`add_request()`** → **`_add_processed_request()`** → **scheduler**
+2. **`step()`** → **scheduler.schedule()** → **model_executor.execute_model()**
+3. **`step()`** → **`_process_model_outputs()`** → **RequestOutput**
+
+### **Memory Management Flow**:
+- **Scheduler** manages KV cache allocation
+- **`reset_*_cache()`** functions manage cache lifecycle
+- **`abort_request()`** frees resources
+
+### **Observability Flow**:
+- **`step()`** → **`do_log_stats()`** → metrics
+- **`step()`** → **`do_tracing()`** → traces
+- **Background threads** collect and export metrics
+
+## **Function Importance Ranking**
+
+1. **`step()`** - The execution heart
+2. **`add_request()`** - Request entry point
+3. **`_process_model_outputs()`** - Output processing
+4. **`from_engine_args()`** - Engine creation
+5. **`do_log_stats()`** - Performance monitoring
+6. **`abort_request()`** - Resource management
+7. **Configuration getters** - State introspection
+
+The `LLMEngine` is essentially a sophisticated **request orchestrator** that coordinates between the scheduler (resource allocation), executor (model execution), and output processors (result formatting) while providing comprehensive observability and error handling.
+
+
