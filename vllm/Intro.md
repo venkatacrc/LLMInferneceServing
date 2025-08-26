@@ -1252,3 +1252,312 @@ def validate_outputs(outputs: List[Any], output_type: Type[_O]) -> List[_O]
 The `LLMEngine` is essentially a sophisticated **request orchestrator** that coordinates between the scheduler (resource allocation), executor (model execution), and output processors (result formatting) while providing comprehensive observability and error handling.
 
 
+# InputPreprocessor: High-Level Design and Architecture
+
+The `preprocess.py` file implements vLLM's **unified input preprocessing system** that transforms diverse input formats into standardized internal representations. The design is built around **polymorphism, async/sync duality, and multi-modal extensibility**.
+
+## Core Design Philosophy
+
+The `InputPreprocessor` class follows a **strategy pattern** combined with **factory pattern** to handle:
+- **Multiple input types**: Text, tokens, embeddings, and multimodal data
+- **Multiple model architectures**: Decoder-only (GPT-style) and encoder-decoder (T5-style) models  
+- **Async and sync processing**: Supporting both blocking and non-blocking operations
+- **Extensible multimodal support**: Images, audio, video through pluggable processors
+
+## Key Design Patterns
+
+### 1. **Polymorphic Input Processing**
+
+The preprocessor handles multiple input formats through a unified interface:
+
+```python
+class InputPreprocessor:
+    def __init__(self, model_config: ModelConfig, tokenizer: Optional[TokenizerGroup], 
+                 mm_registry: MultiModalRegistry = MULTIMODAL_REGISTRY):
+        self.model_config = model_config
+        self.tokenizer = tokenizer
+        self.mm_registry = mm_registry
+```
+
+**Design Concept**: Single entry point that adapts to different input types and model architectures.
+
+### 2. **Main Processing Entry Points**
+
+```python
+def preprocess(self, prompt: PromptType, tokenization_kwargs: Optional[dict[str, Any]] = None,
+               lora_request: Optional[LoRARequest] = None) -> ProcessorInputs:
+    """Preprocess the input prompt."""
+    if self.model_config.is_encoder_decoder:
+        # Encoder-decoder model requires special mapping
+        return self._process_encoder_decoder_prompt(prompt, tokenization_kwargs)
+    
+    if is_explicit_encoder_decoder_prompt(prompt):
+        raise ValueError("Cannot pass encoder-decoder prompt to decoder-only models")
+    
+    # Decoder-only operation
+    return self._process_decoder_only_prompt(prompt, tokenization_kwargs, lora_request)
+
+async def preprocess_async(self, prompt: PromptType, ...) -> ProcessorInputs:
+    """Async version of preprocess with parallel processing capabilities"""
+    # Similar logic but with async/await for concurrent operations
+```
+
+**Design Pattern**: **Template Method Pattern**
+- **Main algorithm** is the same for sync/async
+- **Implementation details** differ (sync vs async tokenization, multimodal processing)
+- **Architecture branching** handles encoder-decoder vs decoder-only models
+
+### 3. **Type-Based Input Dispatching**
+
+```python
+def _prompt_to_llm_inputs(self, prompt: SingletonPrompt, ...) -> SingletonInputs:
+    """Extract the singleton inputs from a prompt."""
+    parsed = parse_singleton_prompt(prompt)
+    
+    if parsed["type"] == "embeds":
+        return self._process_embeds(parsed["content"])
+    if parsed["type"] == "tokens":
+        return self._process_tokens(parsed["content"], lora_request=lora_request)
+    if parsed["type"] == "text":
+        return self._process_text(parsed["content"], tokenization_kwargs, lora_request)
+    if parsed["type"] == "str":
+        return self._process_text(TextPrompt(prompt=parsed["content"]), 
+                                  tokenization_kwargs, lora_request)
+```
+
+**Design Pattern**: **Visitor Pattern**
+- **Input types are parsed** and dispatched to specific handlers
+- **Each handler** knows how to process its specific input type
+- **Extensible** for new input types
+
+### 4. **Multimodal Processing Architecture**
+
+```python
+def _process_multimodal(self, prompt: Union[str, list[int]], mm_data: MultiModalDataDict,
+                       mm_processor_kwargs: Optional[Mapping[str, object]], ...) -> MultiModalInputs:
+    """Process multimodal inputs through the registry system"""
+    
+    # Use the multimodal registry to process different data types
+    mm_inputs = self.mm_registry.process_input(
+        self.model_config,
+        mm_data,
+        mm_processor_kwargs=mm_processor_kwargs,
+    )
+    
+    # Handle text prompt alongside multimodal data
+    if isinstance(prompt, str):
+        prompt_token_ids = self._tokenize_prompt(prompt, lora_request, tokenization_kwargs)
+    else:
+        prompt_token_ids = prompt
+    
+    return MultiModalInputs(
+        type="multimodal",
+        prompt=prompt if isinstance(prompt, str) else "",
+        prompt_token_ids=prompt_token_ids,
+        mm_kwargs=mm_inputs.mm_kwargs,
+        mm_hashes=mm_inputs.mm_hashes,
+        mm_placeholders=mm_inputs.mm_placeholders,
+    )
+```
+
+**Design Concept**: **Registry Pattern**
+- **Pluggable processors** for different modalities (image, audio, video)
+- **Standardized interface** between preprocessor and multimodal handlers
+- **Caching support** through hashing mechanisms
+
+### 5. **Encoder-Decoder Model Support**
+
+```python
+def _process_encoder_decoder_prompt(self, prompt: PromptType, ...) -> EncoderDecoderInputs:
+    """Special handling for encoder-decoder architectures"""
+    
+    if is_explicit_encoder_decoder_prompt(prompt):
+        # User explicitly provided both encoder and decoder prompts
+        encoder_inputs = self._prompt_to_llm_inputs(
+            prompt["encoder_prompt"], tokenization_kwargs=tokenization_kwargs)
+        
+        if (decoder_input := prompt["decoder_prompt"]) is None:
+            decoder_inputs = None
+        else:
+            decoder_inputs = self._prompt_to_llm_inputs(decoder_input)
+            
+        # Handle multimodal inputs specially for enc-dec
+        if self.model_config.is_multimodal_model:
+            encoder_inputs, decoder_inputs = self._split_enc_dec_mm_inputs(
+                encoder_inputs, decoder_inputs)
+    else:
+        # Single prompt - need to determine encoder vs decoder usage
+        inputs = self._prompt_to_llm_inputs(prompt, tokenization_kwargs)
+        
+        if self.model_config.is_multimodal_model:
+            encoder_inputs, decoder_inputs = self._split_enc_dec_mm_inputs(inputs)
+        else:
+            encoder_inputs = inputs
+            decoder_inputs = None
+    
+    return self._build_enc_dec_llm_inputs(encoder_inputs, decoder_inputs)
+```
+
+**Design Concepts**:
+- **Adaptive prompt routing**: Single prompts can go to encoder or decoder based on model type
+- **Special cases**: Whisper models route text to decoder, multimodal data to encoder
+- **Default decoder generation**: Creates appropriate starting tokens when decoder prompt is missing
+
+### 6. **Tokenization Strategy Pattern**
+
+```python
+def _get_tokenization_kw(self, overrides: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    """Model-specific tokenization parameters"""
+    kwargs = dict[str, Any]()
+    
+    if self.model_config.hf_config.model_type == "whisper":
+        # Whisper needs special token handling
+        kwargs["add_special_tokens"] = False
+    
+    if overrides:
+        kwargs.update(overrides)
+    
+    return kwargs
+
+def _tokenize_prompt(self, prompt: str, lora_request: Optional[LoRARequest], 
+                    tokenization_kwargs: Optional[dict[str, Any]] = None) -> list[int]:
+    """Apply the model's tokenizer with model-specific adaptations"""
+    tokenizer = self.get_tokenizer_group()
+    tokenization_kwargs = self._get_tokenization_kw(tokenization_kwargs)
+    
+    return tokenizer.get_lora_tokenizer(lora_request).encode(prompt, **tokenization_kwargs)
+```
+
+**Design Pattern**: **Adapter Pattern**
+- **Different models** require different tokenization strategies
+- **LoRA support**: Different tokenizers for different LoRA adapters
+- **Override mechanisms**: Allow custom tokenization parameters
+
+### 7. **Async Processing with Concurrency**
+
+```python
+async def _process_encoder_decoder_prompt_async(self, prompt: PromptType, ...) -> EncoderDecoderInputs:
+    """Async processing with parallel encoder/decoder handling"""
+    
+    if is_explicit_encoder_decoder_prompt(prompt):
+        encoder_task = self._prompt_to_llm_inputs_async(
+            prompt["encoder_prompt"], tokenization_kwargs=tokenization_kwargs)
+        
+        if (decoder_input := prompt["decoder_prompt"]) is None:
+            encoder_inputs = await encoder_task
+            decoder_inputs = None
+        else:
+            decoder_task = self._prompt_to_llm_inputs_async(
+                decoder_input, tokenization_kwargs=tokenization_kwargs)
+            
+            # Process encoder and decoder in parallel
+            encoder_inputs, decoder_inputs = await asyncio.gather(encoder_task, decoder_task)
+```
+
+**Design Concept**: **Parallel Processing Pattern**
+- **Concurrent tokenization**: Encoder and decoder prompts processed simultaneously
+- **I/O optimization**: Async tokenization prevents blocking
+- **Resource efficiency**: Better utilization of tokenization resources
+
+### 8. **Special Token Management**
+
+```python
+def get_bos_token_id(self, lora_request: Optional[LoRARequest] = None) -> Optional[int]:
+    """Get beginning-of-sequence token with LoRA support"""
+    if self.tokenizer is None:
+        logger.warning("Using None for BOS token id because tokenizer is not initialized")
+        return None
+    return self.tokenizer.get_lora_tokenizer(lora_request).bos_token_id
+
+def _get_default_enc_dec_decoder_prompt(self) -> list[int]:
+    """Generate default decoder prompt for encoder-decoder models"""
+    bos_token_id = self.get_bos_token_id()
+    assert bos_token_id is not None
+    return [bos_token_id]
+
+def _prepare_decoder_input_ids_for_generation(self, decoder_input_ids: Optional[list[int]]) -> list[int]:
+    """Prepare decoder inputs following HuggingFace conventions"""
+    decoder_start_token_id = self.get_decoder_start_token_id()
+    assert decoder_start_token_id is not None
+    
+    if decoder_input_ids is None:
+        decoder_input_ids = self._get_default_enc_dec_decoder_prompt()
+    
+    if (len(decoder_input_ids) == 0 
+        or decoder_input_ids[0] != decoder_start_token_id):
+        decoder_input_ids = [decoder_start_token_id] + decoder_input_ids
+    
+    return decoder_input_ids
+```
+
+**Design Concepts**:
+- **HuggingFace compatibility**: Follows transformers library conventions
+- **Model-specific logic**: Different models have different special token requirements
+- **Graceful defaults**: Automatic generation of appropriate starting sequences
+
+## Advanced Design Features
+
+### **Input Type Abstraction**
+
+The system handles multiple input representations:
+
+```python
+# Text inputs
+TextPrompt(prompt="Hello world")
+
+# Token inputs  
+TokensPrompt(prompt_token_ids=[1, 2, 3])
+
+# Embedding inputs
+EmbedsPrompt(prompt_embeds=tensor)
+
+# Multimodal inputs
+TextPrompt(prompt="Describe this image", multi_modal_data={"image": image_data})
+
+# Encoder-decoder inputs
+{"encoder_prompt": "English text", "decoder_prompt": "French text"}
+```
+
+### **Caching and Optimization**
+
+```python
+# Cache salt for request deduplication
+if cache_salt := parsed_content.get("cache_salt"):
+    inputs["cache_salt"] = cache_salt
+
+# Multimodal hashing for efficient caching
+mm_hashes=mm_inputs.mm_hashes
+```
+
+### **Error Handling and Validation**
+
+```python
+if self.tokenizer is None:
+    raise ValueError("You cannot pass text prompts when `skip_tokenizer_init` is True")
+
+if not self.model_config.is_encoder_decoder:
+    logger.warning_once("Using None for decoder start token id because "
+                       "this is not an encoder/decoder model.")
+```
+
+## Integration Points
+
+The `InputPreprocessor` serves as the **universal adapter** between:
+- **Raw user inputs** (text, images, tokens) and internal representations
+- **Different model architectures** (decoder-only vs encoder-decoder)
+- **Sync and async execution** contexts
+- **Multimodal processors** and the core engine
+- **LoRA adapters** and tokenization systems
+
+## Key Benefits
+
+1. **Unified Interface**: Single entry point for all input types
+2. **Architecture Agnostic**: Handles both decoder-only and encoder-decoder models
+3. **Multimodal Extensibility**: Pluggable processor system
+4. **Performance Optimization**: Async processing with concurrency
+5. **LoRA Support**: Adaptive tokenization for fine-tuned models
+6. **Caching Support**: Efficient request deduplication
+7. **Error Resilience**: Graceful handling of edge cases
+
+This design makes vLLM capable of handling diverse input formats while maintaining **type safety, performance, and extensibility** across different model architectures and use cases.
+
