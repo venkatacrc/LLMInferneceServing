@@ -90,3 +90,59 @@ except Exception as e:
 
 ```
 
+# Containerization
+
+```bash
+Containers are an isolated environment to run any code+ packages together. Select the container, and go to the Files tab to see what's in it.
+
+Images are used to run containers
+git clone https://github.com/docker/welcome-to-docker
+cd welcome-to-docker
+
+# create a Dockerfile
+% cat Dockerfile 
+# Start your image with a node base image
+FROM node:22-alpine
+
+# The /app directory should act as the main application directory
+WORKDIR /app
+
+# Copy the app package and package-lock.json file
+COPY package*.json ./
+
+# Copy local directories to the current local directory of our docker image (/app)
+COPY ./src ./src
+COPY ./public ./public
+
+# Install node packages, install serve, build the app, and remove dependencies at the end
+RUN npm install \
+    && npm install -g serve@latest \
+    && npm run build \
+    && rm -fr node_modules
+
+EXPOSE 3000
+
+# Start the app using serve command
+CMD [ "serve", "-s", "build" ]%
+
+# build the docker
+You can build an image using the following docker build command via a CLI in your project folder.
+
+docker build -t welcome-to-docker .
+Breaking down this command
+The -t flag tags your image with a name. (welcome-to-docker in this case). And the . lets Docker know where it can find the Dockerfile.
+
+# Run the container
+Once the build is complete, an image will appear in the Images tab. Select the image name to see its details. Select Run to run it as a container. In the Optional settings remember to specify a port number (something like 8089).
+<img width="1083" height="735" alt="image" src="https://github.com/user-attachments/assets/aaa32e90-959b-4a1e-93be-a4f98694cbc1" />
+
+docker push
+docker pull
+
+# Run Docker Hub images
+docker run -d -p 8085:8080 technoavengers/model_serving
+# other examples
+docker run postgres
+docker run mongodb
+```
+
