@@ -146,3 +146,14 @@ docker run postgres
 docker run mongodb
 ```
 
+# Kubernetes
+<img width="503" height="420" alt="image" src="https://github.com/user-attachments/assets/b9637715-efc2-4076-bf47-a2d4c692cb80" />
+
+# CI / CD
+
+> GitHub Actions -> Test & SonarQube Analysis -> Train Model -> Docker image build & push -> GCP authentication -> Kuberenetes Deploy
+
+
+
+
+
