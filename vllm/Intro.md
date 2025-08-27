@@ -3,6 +3,7 @@
 ```bash
 python /home/jupyter/.local/lib/python3.10/site-packages/uv/__main__.py pip install vllm --torch-backend=auto
 pip install ipython
+pip install flashinfer-python
 
 # start the API server
 /libraries/vllmenv/bin/vllm serve /home/jupyter/models/Meta-Llama-3.1-8B-Instruct --dtype float16 --port 8010 --disable-log-requests --tensor-parallel-size 1
