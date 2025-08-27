@@ -1,8 +1,102 @@
 # install vLLM
 
 ```bash
- python /home/jupyter/.local/lib/python3.10/site-packages/uv/__main__.py pip install vllm --torch-backend=auto
+python /home/jupyter/.local/lib/python3.10/site-packages/uv/__main__.py pip install vllm --torch-backend=auto
+pip install ipython
+
+# start the API server
+/libraries/vllmenv/bin/vllm serve /home/jupyter/models/Meta-Llama-3.1-8B-Instruct --dtype float16 --port 8010 --disable-log-requests --tensor-parallel-size 1
+
+# sample log
+Testing Get Stats Script....
+Started Running GPU stats
+INFO 08-27 21:02:11 [__init__.py:241] Automatically detected platform cuda.
+WARNING 08-27 21:02:14 [__init__.py:1726] argument '--disable-log-requests' is deprecated and replaced with '--enable-log-requests'. This will be removed in v0.12.0.
+[1;36m(APIServer pid=15)[0;0m INFO 08-27 21:02:14 [api_server.py:1805] vLLM API server version 0.10.1.1
+[1;36m(APIServer pid=15)[0;0m INFO 08-27 21:02:14 [utils.py:326] non-default args: {'model_tag': '/home/jupyter/models/Meta-Llama-3.1-8B-Instruct', 'port': 8010, 'model': '/home/jupyter/models/Meta-Llama-3.1-8B-Instruct', 'dtype': 'float16'}
+[1;36m(APIServer pid=15)[0;0m INFO 08-27 21:02:22 [__init__.py:711] Resolved architecture: *LlamaForCausalLM*
+[1;36m(APIServer pid=15)[0;0m WARNING 08-27 21:02:22 [__init__.py:2819] Casting torch.bfloat16 to torch.float16.
+[1;36m(APIServer pid=15)[0;0m INFO 08-27 21:02:22 [__init__.py:1750] Using max model len 131072
+[1;36m(APIServer pid=15)[0;0m INFO 08-27 21:02:22 [scheduler.py:222] Chunked prefill is enabled with max_num_batched_tokens=2048.
+INFO 08-27 21:02:28 [__init__.py:241] Automatically detected platform cuda.
+[1;36m(EngineCore_0 pid=82)[0;0m INFO 08-27 21:02:30 [core.py:636] Waiting for init message from front-end.
+[1;36m(EngineCore_0 pid=82)[0;0m INFO 08-27 21:02:30 [core.py:74] Initializing a V1 LLM engine (v0.10.1.1) with config: model='/home/jupyter/models/Meta-Llama-3.1-8B-Instruct', speculative_config=None, tokenizer='/home/jupyter/models/Meta-Llama-3.1-8B-Instruct', skip_tokenizer_init=False, tokenizer_mode=auto, revision=None, override_neuron_config={}, tokenizer_revision=None, trust_remote_code=False, dtype=torch.float16, max_seq_len=131072, download_dir=None, load_format=auto, tensor_parallel_size=1, pipeline_parallel_size=1, disable_custom_all_reduce=False, quantization=None, enforce_eager=False, kv_cache_dtype=auto, device_config=cuda, decoding_config=DecodingConfig(backend='auto', disable_fallback=False, disable_any_whitespace=False, disable_additional_properties=False, reasoning_backend=''), observability_config=ObservabilityConfig(show_hidden_metrics_for_version=None, otlp_traces_endpoint=None, collect_detailed_traces=None), seed=0, served_model_name=/home/jupyter/models/Meta-Llama-3.1-8B-Instruct, enable_prefix_caching=True, chunked_prefill_enabled=True, use_async_output_proc=True, pooler_config=None, compilation_config={"level":3,"debug_dump_path":"","cache_dir":"","backend":"","custom_ops":[],"splitting_ops":["vllm.unified_attention","vllm.unified_attention_with_output","vllm.mamba_mixer2"],"use_inductor":true,"compile_sizes":[],"inductor_compile_config":{"enable_auto_functionalized_v2":false},"inductor_passes":{},"cudagraph_mode":1,"use_cudagraph":true,"cudagraph_num_of_warmups":1,"cudagraph_capture_sizes":[512,504,496,488,480,472,464,456,448,440,432,424,416,408,400,392,384,376,368,360,352,344,336,328,320,312,304,296,288,280,272,264,256,248,240,232,224,216,208,200,192,184,176,168,160,152,144,136,128,120,112,104,96,88,80,72,64,56,48,40,32,24,16,8,4,2,1],"cudagraph_copy_inputs":false,"full_cuda_graph":false,"pass_config":{},"max_capture_size":512,"local_cache_dir":null}
+[1;36m(EngineCore_0 pid=82)[0;0m INFO 08-27 21:02:33 [parallel_state.py:1134] rank 0 in world size 1 is assigned as DP rank 0, PP rank 0, TP rank 0, EP rank 0
+[1;36m(EngineCore_0 pid=82)[0;0m WARNING 08-27 21:02:33 [topk_topp_sampler.py:61] FlashInfer is not available. Falling back to the PyTorch-native implementation of top-p & top-k sampling. For the best performance, please install FlashInfer.
+[1;36m(EngineCore_0 pid=82)[0;0m INFO 08-27 21:02:33 [gpu_model_runner.py:1953] Starting to load model /home/jupyter/models/Meta-Llama-3.1-8B-Instruct...
+[1;36m(EngineCore_0 pid=82)[0;0m INFO 08-27 21:02:33 [gpu_model_runner.py:1985] Loading model from scratch...
+[1;36m(EngineCore_0 pid=82)[0;0m INFO 08-27 21:02:33 [cuda.py:328] Using Flash Attention backend on V1 engine.
+[1;36m(EngineCore_0 pid=82)[0;0m
+Loading safetensors checkpoint shards: 0% Completed | 0/4 [00:00<?, ?it/s]
+[1;36m(EngineCore_0 pid=82)[0;0m
+Loading safetensors checkpoint shards: 25% Completed | 1/4 [00:03<00:10, 3.46s/it]
+[1;36m(EngineCore_0 pid=82)[0;0m
+...
+Loading safetensors checkpoint shards: 100% Completed | 4/4 [00:10<00:00, 2.73s/it]
+[1;36m(EngineCore_0 pid=82)[0;0m
+[1;36m(EngineCore_0 pid=82)[0;0m INFO 08-27 21:02:44 [default_loader.py:262] Loading weights took 10.95 seconds
+[1;36m(EngineCore_0 pid=82)[0;0m INFO 08-27 21:02:45 [gpu_model_runner.py:2007] Model loading took 14.9889 GiB and 11.314340 seconds
+[1;36m(EngineCore_0 pid=82)[0;0m INFO 08-27 21:02:53 [backends.py:548] Using cache directory: /home/jupyter/.cache/vllm/torch_compile_cache/706c10d88e/rank_0_0/backbone for vLLM's torch.compile
+[1;36m(EngineCore_0 pid=82)[0;0m INFO 08-27 21:02:53 [backends.py:559] Dynamo bytecode transform time: 8.13 s
+[1;36m(EngineCore_0 pid=82)[0;0m INFO 08-27 21:02:56 [backends.py:194] Cache the graph for dynamic shape for later use
+[1;36m(EngineCore_0 pid=82)[0;0m INFO 08-27 21:03:19 [backends.py:215] Compiling a graph for dynamic shape takes 25.91 s
+[1;36m(EngineCore_0 pid=82)[0;0m INFO 08-27 21:03:25 [monitor.py:34] torch.compile takes 34.03 s in total
+[1;36m(EngineCore_0 pid=82)[0;0m INFO 08-27 21:03:25 [gpu_worker.py:276] Available KV cache memory: 19.25 GiB
+[1;36m(EngineCore_0 pid=82)[0;0m INFO 08-27 21:03:26 [kv_cache_utils.py:849] GPU KV cache size: 157,648 tokens
+[1;36m(EngineCore_0 pid=82)[0;0m INFO 08-27 21:03:26 [kv_cache_utils.py:853] Maximum concurrency for 131,072 tokens per request: 1.20x
+[1;36m(EngineCore_0 pid=82)[0;0m
+Capturing CUDA graphs (mixed prefill-decode, PIECEWISE): 0%| | 0/67 [00:00<?, ?it/s]
+...
+Capturing CUDA graphs (mixed prefill-decode, PIECEWISE): 100%|??????????| 67/67 [00:03<00:00, 21.97it/s]
+[1;36m(EngineCore_0 pid=82)[0;0m INFO 08-27 21:03:29 [gpu_model_runner.py:2708] Graph capturing finished in 3 secs, took 0.52 GiB
+[1;36m(EngineCore_0 pid=82)[0;0m INFO 08-27 21:03:29 [core.py:214] init engine (profile, create kv cache, warmup model) took 44.33 seconds
+[1;36m(APIServer pid=15)[0;0m INFO 08-27 21:03:30 [loggers.py:142] Engine 000: vllm cache_config_info with initialization after num_gpu_blocks is: 9853
+[1;36m(APIServer pid=15)[0;0m INFO 08-27 21:03:30 [api_server.py:1611] Supported_tasks: ['generate']
+[1;36m(APIServer pid=15)[0;0m WARNING 08-27 21:03:30 [__init__.py:1625] Default sampling parameters have been overridden by the model's Hugging Face generation config recommended from the model creator. If this is not intended, please relaunch vLLM instance with `--generation-config vllm`.
+[1;36m(APIServer pid=15)[0;0m INFO 08-27 21:03:30 [serving_responses.py:120] Using default chat sampling params from model: {'temperature': 0.6, 'top_p': 0.9}
+[1;36m(APIServer pid=15)[0;0m INFO 08-27 21:03:30 [serving_chat.py:134] Using default chat sampling params from model: {'temperature': 0.6, 'top_p': 0.9}
+[1;36m(APIServer pid=15)[0;0m INFO 08-27 21:03:30 [serving_completion.py:77] Using default completion sampling params from model: {'temperature': 0.6, 'top_p': 0.9}
+[1;36m(APIServer pid=15)[0;0m INFO 08-27 21:03:30 [api_server.py:1880] Starting vLLM API server 0 on http://0.0.0.0:8010
+[1;36m(APIServer pid=15)[0;0m INFO 08-27 21:03:30 [launcher.py:36] Available routes are:
+[1;36m(APIServer pid=15)[0;0m INFO 08-27 21:03:30 [launcher.py:44] Route: /openapi.json, Methods: GET, HEAD
+[1;36m(APIServer pid=15)[0;0m INFO 08-27 21:03:30 [launcher.py:44] Route: /docs, Methods: GET, HEAD
+[1;36m(APIServer pid=15)[0;0m INFO 08-27 21:03:30 [launcher.py:44] Route: /docs/oauth2-redirect, Methods: GET, HEAD
+[1;36m(APIServer pid=15)[0;0m INFO 08-27 21:03:30 [launcher.py:44] Route: /redoc, Methods: GET, HEAD
+[1;36m(APIServer pid=15)[0;0m INFO 08-27 21:03:30 [launcher.py:44] Route: /health, Methods: GET
+[1;36m(APIServer pid=15)[0;0m INFO 08-27 21:03:30 [launcher.py:44] Route: /load, Methods: GET
+[1;36m(APIServer pid=15)[0;0m INFO 08-27 21:03:30 [launcher.py:44] Route: /ping, Methods: POST
+[1;36m(APIServer pid=15)[0;0m INFO 08-27 21:03:30 [launcher.py:44] Route: /ping, Methods: GET
+[1;36m(APIServer pid=15)[0;0m INFO 08-27 21:03:30 [launcher.py:44] Route: /tokenize, Methods: POST
+[1;36m(APIServer pid=15)[0;0m INFO 08-27 21:03:30 [launcher.py:44] Route: /detokenize, Methods: POST
+[1;36m(APIServer pid=15)[0;0m INFO 08-27 21:03:30 [launcher.py:44] Route: /v1/models, Methods: GET
+[1;36m(APIServer pid=15)[0;0m INFO 08-27 21:03:30 [launcher.py:44] Route: /version, Methods: GET
+[1;36m(APIServer pid=15)[0;0m INFO 08-27 21:03:30 [launcher.py:44] Route: /v1/responses, Methods: POST
+[1;36m(APIServer pid=15)[0;0m INFO 08-27 21:03:30 [launcher.py:44] Route: /v1/responses/{response_id}, Methods: GET
+[1;36m(APIServer pid=15)[0;0m INFO 08-27 21:03:30 [launcher.py:44] Route: /v1/responses/{response_id}/cancel, Methods: POST
+[1;36m(APIServer pid=15)[0;0m INFO 08-27 21:03:30 [launcher.py:44] Route: /v1/chat/completions, Methods: POST
+[1;36m(APIServer pid=15)[0;0m INFO 08-27 21:03:30 [launcher.py:44] Route: /v1/completions, Methods: POST
+[1;36m(APIServer pid=15)[0;0m INFO 08-27 21:03:30 [launcher.py:44] Route: /v1/embeddings, Methods: POST
+[1;36m(APIServer pid=15)[0;0m INFO 08-27 21:03:30 [launcher.py:44] Route: /pooling, Methods: POST
+[1;36m(APIServer pid=15)[0;0m INFO 08-27 21:03:30 [launcher.py:44] Route: /classify, Methods: POST
+[1;36m(APIServer pid=15)[0;0m INFO 08-27 21:03:30 [launcher.py:44] Route: /score, Methods: POST
+[1;36m(APIServer pid=15)[0;0m INFO 08-27 21:03:30 [launcher.py:44] Route: /v1/score, Methods: POST
+[1;36m(APIServer pid=15)[0;0m INFO 08-27 21:03:30 [launcher.py:44] Route: /v1/audio/transcriptions, Methods: POST
+[1;36m(APIServer pid=15)[0;0m INFO 08-27 21:03:30 [launcher.py:44] Route: /v1/audio/translations, Methods: POST
+[1;36m(APIServer pid=15)[0;0m INFO 08-27 21:03:30 [launcher.py:44] Route: /rerank, Methods: POST
+[1;36m(APIServer pid=15)[0;0m INFO 08-27 21:03:30 [launcher.py:44] Route: /v1/rerank, Methods: POST
+[1;36m(APIServer pid=15)[0;0m INFO 08-27 21:03:30 [launcher.py:44] Route: /v2/rerank, Methods: POST
+[1;36m(APIServer pid=15)[0;0m INFO 08-27 21:03:30 [launcher.py:44] Route: /scale_elastic_ep, Methods: POST
+[1;36m(APIServer pid=15)[0;0m INFO 08-27 21:03:30 [launcher.py:44] Route: /is_scaling_elastic_ep, Methods: POST
+[1;36m(APIServer pid=15)[0;0m INFO 08-27 21:03:30 [launcher.py:44] Route: /invocations, Methods: POST
+[1;36m(APIServer pid=15)[0;0m INFO 08-27 21:03:30 [launcher.py:44] Route: /metrics, Methods: GET
+[1;36m(APIServer pid=15)[0;0m INFO: Started server process [15]
+[1;36m(APIServer pid=15)[0;0m INFO: Waiting for application startup.
+[1;36m(APIServer pid=15)[0;0m INFO: Application startup complete.
+
 ```
+
+
+
 
 # vLLM Request Processing Workflow
 
