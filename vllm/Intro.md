@@ -1,4 +1,8 @@
+# install vLLM
 
+```bash
+ python /home/jupyter/.local/lib/python3.10/site-packages/uv/__main__.py pip install vllm --torch-backend=auto
+```
 
 # vLLM Request Processing Workflow
 
