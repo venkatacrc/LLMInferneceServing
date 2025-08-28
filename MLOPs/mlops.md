@@ -153,7 +153,8 @@ docker run mongodb
 
 > GitHub Actions -> Test & SonarQube Analysis -> Train Model -> Docker image build & push -> GCP authentication -> Kuberenetes Deploy
 
+# Model Monitoring
 
-
+## Prometheus & Grafana
 
 
