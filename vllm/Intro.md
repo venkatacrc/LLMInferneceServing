@@ -102,6 +102,83 @@ Capturing CUDA graphs (mixed prefill-decode, PIECEWISE): 100%|??????????| 67/67 
 # vLLM Request Processing Workflow
 
 The diagram above illustrates the complete request processing flow in vLLM. Here's how a request flows through the system:
+
+<img width="787" height="759" alt="image" src="https://github.com/user-attachments/assets/0495bef9-1268-4f58-ad0b-746894a9391f" />
+
+```
+graph TB
+    Client["🌐 Client Request<br/>(HTTP/OpenAI API)"]
+    
+    subgraph "API Server Layer"
+        FastAPI["FastAPI Server<br/>api_server.py"]
+        OpenAI["OpenAI Compatible<br/>Endpoints"]
+    end
+    
+    subgraph "Engine Layer"
+        AsyncEngine["AsyncLLMEngine<br/>(v0 Architecture)"]
+        AsyncLLM["AsyncLLM<br/>(v1 Architecture)"]
+        LLMEngine["LLMEngine<br/>(Core Engine)"]
+    end
+    
+    subgraph "Processing Components"
+        Processor["Processor<br/>(Input Processing)"]
+        Scheduler["Scheduler<br/>(Request Scheduling)"]
+        OutputProc["OutputProcessor<br/>(Output Processing)"]
+    end
+    
+    subgraph "Core Execution"
+        EngineCore["EngineCore<br/>(v1 Core)"]
+        ModelExecutor["ModelExecutor<br/>(Distributed Execution)"]
+    end
+    
+    subgraph "Worker Layer"
+        Worker1["Worker 1<br/>(GPU Process)"]
+        Worker2["Worker 2<br/>(GPU Process)"]
+        WorkerN["Worker N<br/>(GPU Process)"]
+        ModelRunner["ModelRunner<br/>(Model Execution)"]
+    end
+    
+    subgraph "Model Layer"
+        Model["PyTorch Model<br/>(nn.Module)"]
+        KVCache["KV Cache<br/>(Memory Management)"]
+    end
+    
+    Client --> FastAPI
+    FastAPI --> OpenAI
+    OpenAI --> AsyncEngine
+    OpenAI --> AsyncLLM
+    
+    AsyncEngine --> LLMEngine
+    AsyncLLM --> EngineCore
+    
+    LLMEngine --> Processor
+    LLMEngine --> Scheduler
+    LLMEngine --> OutputProc
+    LLMEngine --> ModelExecutor
+    
+    EngineCore --> Processor
+    EngineCore --> Scheduler
+    EngineCore --> OutputProc
+    EngineCore --> ModelExecutor
+    
+    ModelExecutor --> Worker1
+    ModelExecutor --> Worker2
+    ModelExecutor --> WorkerN
+    
+    Worker1 --> ModelRunner
+    Worker2 --> ModelRunner
+    WorkerN --> ModelRunner
+    
+    ModelRunner --> Model
+    ModelRunner --> KVCache
+    
+    style Client fill:#e1f5fe
+    style FastAPI fill:#f3e5f5
+    style AsyncEngine fill:#fff3e0
+    style AsyncLLM fill:#fff3e0
+    style EngineCore fill:#e8f5e8
+    style Model fill:#ffebee
+```
 <img width="686" height="1050" alt="image" src="https://github.com/user-attachments/assets/e0f58397-78d4-4525-a360-b4704c2a7b58" />
 
 
